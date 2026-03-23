@@ -6,6 +6,7 @@ const Store = (() => {
     config: 'loyalsip_config',
     customers: 'loyalsip_customers',
     pending: 'loyalsip_pending',
+    resolved: 'loyalsip_resolved',
     recentStamps: 'loyalsip_recent_stamps',
   };
 
@@ -133,6 +134,11 @@ const Store = (() => {
     const req = pending[idx];
     pending.splice(idx, 1);
     savePending(pending);
+    // Store resolved status so customer polling can detect confirmed vs declined
+    const resolved = _get(KEYS.resolved, []);
+    resolved.push({ ...req, status, resolvedAt: Date.now() });
+    // Keep only last 50 resolved entries
+    _set(KEYS.resolved, resolved.slice(-50));
     return { ...req, status };
   }
 
@@ -143,6 +149,17 @@ const Store = (() => {
 
   function findPendingForCustomer(customerId) {
     return getPending().find(p => p.customerId === customerId && p.status === 'pending');
+  }
+
+  function findResolvedForCustomer(customerId) {
+    const resolved = _get(KEYS.resolved, []);
+    // Find most recent resolved request for this customer
+    return resolved.filter(r => r.customerId === customerId).pop() || null;
+  }
+
+  function clearResolvedForCustomer(customerId) {
+    const resolved = _get(KEYS.resolved, []);
+    _set(KEYS.resolved, resolved.filter(r => r.customerId !== customerId));
   }
 
   // Recent stamps (for barista display)
@@ -210,7 +227,7 @@ const Store = (() => {
     getConfig, saveConfig, defaultConfig,
     getCustomers, saveCustomers, findCustomer, registerCustomer, generatePassCode,
     addStamp, redeemReward,
-    getPending, addPendingRequest, resolvePending, cancelPending, findPendingForCustomer,
+    getPending, addPendingRequest, resolvePending, cancelPending, findPendingForCustomer, findResolvedForCustomer, clearResolvedForCustomer,
     getRecentStamps,
     getAnalytics,
     applyTheme,

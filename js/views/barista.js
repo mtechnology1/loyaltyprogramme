@@ -113,12 +113,14 @@ function BaristaView(container) {
           if (c) showToast(`&#10003; Stamp #${c.visits} for ${esc(c.name)}${c.visits % config.rewardThreshold === 0 ? ' &#127873; REWARD!' : ''}`, c.visits % config.rewardThreshold === 0);
         } else if (action === 'decline') {
           Store.resolvePending(reqId, 'declined');
+          showToast('&#10007; Check-in declined', false, true);
         } else if (action === 'confirm-redeem') {
           Store.resolvePending(reqId, 'confirmed');
           const c = Store.redeemReward(custId);
           if (c) showToast(`&#127873; Reward redeemed for ${esc(c.name)} — card reset!`, true);
         } else if (action === 'decline-redeem') {
           Store.resolvePending(reqId, 'declined');
+          showToast('&#10007; Redemption declined', false, true);
         }
         render();
       };

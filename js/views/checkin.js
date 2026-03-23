@@ -4,17 +4,23 @@
 function CheckinView(container, params) {
   const config = Store.getConfig();
   let mode = 'phone'; // 'phone' or 'email'
-  let state = 'form';  // 'form', 'register', 'waiting', 'confirmed', 'reward'
+  let state = 'form';  // 'form', 'register', 'waiting', 'confirmed', 'declined', 'reward'
   let customer = null;
+  let contactValue = ''; // preserve contact across renders
   let pollInterval = null;
 
   function render() {
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     container.className = 'checkin-page';
     if (state === 'form') renderForm();
     else if (state === 'register') renderRegister();
     else if (state === 'waiting') renderWaiting();
     else if (state === 'confirmed') renderConfirmed();
+    else if (state === 'declined') renderDeclined();
     else if (state === 'reward') renderReward();
+    else if (state === 'redeem-waiting') renderRedemptionWaiting();
+    else if (state === 'celebration') renderCelebration();
+    else if (state === 'redeem-declined') renderRedemptionDeclined();
   }
 
   function renderForm() {
@@ -48,10 +54,8 @@ function CheckinView(container, params) {
 
     document.getElementById('togglePhone').onclick = () => { mode = 'phone'; render(); };
     document.getElementById('toggleEmail').onclick = () => { mode = 'email'; render(); };
-
     document.getElementById('checkinBtn').onclick = handleCheckin;
 
-    // Enter key
     const input = document.getElementById('phoneInput') || document.getElementById('emailInput');
     if (input) input.onkeydown = (e) => { if (e.key === 'Enter') handleCheckin(); };
   }
@@ -63,6 +67,7 @@ function CheckinView(container, params) {
     if (mode === 'phone') {
       const phone = phoneInput ? phoneInput.value.replace(/\D/g, '') : '';
       if (phone.length < 7) { shake(phoneInput); return; }
+      contactValue = phoneInput.value;
       customer = Store.findCustomer({ phone });
       if (customer) {
         handleReturning(customer);
@@ -73,6 +78,7 @@ function CheckinView(container, params) {
     } else {
       const email = emailInput ? emailInput.value.trim() : '';
       if (!email.includes('@') || email.length < 5) { shake(emailInput); return; }
+      contactValue = email;
       customer = Store.findCustomer({ email });
       if (customer) {
         handleReturning(customer);
@@ -86,6 +92,8 @@ function CheckinView(container, params) {
   function handleReturning(c) {
     customer = c;
     const threshold = config.rewardThreshold;
+    // Clear any stale resolved entries for this customer
+    Store.clearResolvedForCustomer(customer.id);
     // If card is full, go to reward screen
     if (customer.visits > 0 && customer.visits % threshold === 0) {
       state = 'reward';
@@ -99,12 +107,6 @@ function CheckinView(container, params) {
   }
 
   function renderRegister() {
-    const phoneInput = document.getElementById('phoneInput');
-    const emailInput = document.getElementById('emailInput');
-    const contact = mode === 'phone'
-      ? (phoneInput ? phoneInput.value : '')
-      : (emailInput ? emailInput.value : '');
-
     container.innerHTML = `
       <div class="checkin-container">
         <div class="checkin-header">
@@ -125,9 +127,11 @@ function CheckinView(container, params) {
     document.getElementById('registerBtn').onclick = () => {
       const name = nameInput.value.trim();
       if (!name) { shake(nameInput); return; }
-      const contactData = mode === 'phone' ? { phone: contact.replace(/\D/g, '') } : { email: contact.trim() };
+      const contactData = mode === 'phone'
+        ? { phone: contactValue.replace(/\D/g, '') }
+        : { email: contactValue.trim() };
       customer = Store.registerCustomer({ name, ...contactData });
-      // Auto-stamp first visit
+      // Auto-stamp first visit (3.1.4)
       customer = Store.addStamp(customer.id);
       state = 'confirmed';
       render();
@@ -145,6 +149,7 @@ function CheckinView(container, params) {
           <div class="spinner"></div>
           <h2>Waiting for barista...</h2>
           <p>Hi ${esc(customer.name)}, your check-in request has been sent</p>
+          <p class="waiting-progress">${customer.visits} / ${config.rewardThreshold} stamps so far</p>
           <button class="btn btn-outline" id="cancelBtn">Cancel</button>
         </div>
       </div>
@@ -156,14 +161,20 @@ function CheckinView(container, params) {
       render();
     };
 
-    // Poll for confirmation
+    // Poll for resolution — check resolved status to distinguish confirmed vs declined
     pollInterval = setInterval(() => {
       const pending = Store.findPendingForCustomer(customer.id);
       if (!pending) {
-        // Request was resolved — refresh customer data
         clearInterval(pollInterval);
+        pollInterval = null;
+        const resolved = Store.findResolvedForCustomer(customer.id);
+        Store.clearResolvedForCustomer(customer.id);
         customer = Store.findCustomer({ id: customer.id });
-        state = 'confirmed';
+        if (resolved && resolved.status === 'declined') {
+          state = 'declined';
+        } else {
+          state = 'confirmed';
+        }
         render();
       }
     }, 1000);
@@ -185,26 +196,33 @@ function CheckinView(container, params) {
           <h2>Stamp collected!</h2>
           <p>Visit #${customer.visits} — ${remaining > 0 ? remaining + ' more until your reward!' : 'You\'ve earned your reward!'}</p>
           ${renderStampCard(displayStamps, threshold)}
-          ${customer.visits === 1 ? `
-            <div class="wallet-prompt">
-              <button class="btn btn-primary btn-block" id="walletBtn">Save Wallet Pass</button>
-              <a href="#/checkin" class="skip-link" id="skipWallet">Skip for now</a>
-            </div>
-          ` : `
-            <button class="btn btn-primary btn-block" id="doneBtn">Done</button>
-          `}
+          <div class="confirmed-actions">
+            <a href="#/wallet/${customer.passCode}" class="btn btn-primary btn-block">View Wallet Pass</a>
+            <button class="btn btn-outline btn-block" id="doneBtn">Done</button>
+          </div>
         </div>
       </div>
     `;
 
-    const walletBtn = document.getElementById('walletBtn');
-    if (walletBtn) walletBtn.onclick = () => Router.navigate('/wallet/' + customer.passCode);
+    document.getElementById('doneBtn').onclick = () => { state = 'form'; render(); };
+  }
 
-    const doneBtn = document.getElementById('doneBtn');
-    if (doneBtn) doneBtn.onclick = () => { state = 'form'; render(); };
+  function renderDeclined() {
+    container.innerHTML = `
+      <div class="checkin-container">
+        <div class="checkin-header">
+          <h1>${esc(config.shopName)}</h1>
+        </div>
+        <div class="checkin-card declined-card">
+          <div class="declined-icon">&#10007;</div>
+          <h2>Request declined</h2>
+          <p>The barista was unable to confirm your check-in. Please speak to a member of staff or try again.</p>
+          <button class="btn btn-primary btn-block" id="retryBtn">Try Again</button>
+        </div>
+      </div>
+    `;
 
-    const skipLink = document.getElementById('skipWallet');
-    if (skipLink) skipLink.onclick = (e) => { e.preventDefault(); state = 'form'; render(); };
+    document.getElementById('retryBtn').onclick = () => { state = 'form'; render(); };
   }
 
   function renderReward() {
@@ -224,8 +242,10 @@ function CheckinView(container, params) {
     `;
 
     document.getElementById('redeemBtn').onclick = () => {
+      Store.clearResolvedForCustomer(customer.id);
       Store.addPendingRequest(customer.id, 'redemption');
-      renderRedemptionWaiting();
+      state = 'redeem-waiting';
+      render();
     };
   }
 
@@ -254,8 +274,16 @@ function CheckinView(container, params) {
       const pending = Store.findPendingForCustomer(customer.id);
       if (!pending) {
         clearInterval(pollInterval);
+        pollInterval = null;
+        const resolved = Store.findResolvedForCustomer(customer.id);
+        Store.clearResolvedForCustomer(customer.id);
         customer = Store.findCustomer({ id: customer.id });
-        renderCelebration();
+        if (resolved && resolved.status === 'declined') {
+          state = 'redeem-declined';
+        } else {
+          state = 'celebration';
+        }
+        render();
       }
     }, 1000);
   }
@@ -278,6 +306,24 @@ function CheckinView(container, params) {
     `;
 
     document.getElementById('celebrationDone').onclick = () => { state = 'form'; render(); };
+  }
+
+  function renderRedemptionDeclined() {
+    container.innerHTML = `
+      <div class="checkin-container">
+        <div class="checkin-header">
+          <h1>${esc(config.shopName)}</h1>
+        </div>
+        <div class="checkin-card declined-card">
+          <div class="declined-icon">&#10007;</div>
+          <h2>Redemption declined</h2>
+          <p>The barista was unable to confirm your reward. Please speak to a member of staff.</p>
+          <button class="btn btn-primary btn-block" id="retryRedeemBtn">Back</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('retryRedeemBtn').onclick = () => { state = 'form'; render(); };
   }
 
   function renderStampCard(filled, total) {

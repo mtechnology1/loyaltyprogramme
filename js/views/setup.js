@@ -141,7 +141,7 @@ function SetupView(container) {
         return;
       }
       Store.saveConfig({ ...data, setupComplete: true });
-      Router.navigate('/dashboard');
+      Router.navigate('/checkin');
     };
 
     // Live preview updates

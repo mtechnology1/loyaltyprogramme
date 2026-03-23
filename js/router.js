@@ -54,6 +54,7 @@ const Router = (() => {
             if (match) {
               const cleanup = h(app, params, routeParams);
               if (typeof cleanup === 'function') currentCleanup = cleanup;
+              if (typeof updateNav === 'function') updateNav();
               return;
             }
           }
@@ -61,6 +62,8 @@ const Router = (() => {
       }
       app.innerHTML = '<div class="container"><h2>Page not found</h2><a href="#/dashboard">Go to Dashboard</a></div>';
     }
+    // Update bottom nav active state
+    if (typeof updateNav === 'function') updateNav();
   }
 
   function init() {

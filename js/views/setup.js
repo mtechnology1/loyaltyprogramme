@@ -4,8 +4,8 @@
  * Step 2: Brand colours
  * Step 3: Reward configuration
  */
-function SetupView(container) {
-  const config = Store.getConfig();
+async function SetupView(container) {
+  const config = await Store.getConfig();
   let step = 1;
   const data = {
     shopName: config.shopName || '',
@@ -79,7 +79,7 @@ function SetupView(container) {
           </div>
         </div>
       </div>
-      <div class="preview-card colour-preview" id="colourPreview" style="background:${data.backgroundColor}; color:${Store.getConfig().accentColor};">
+      <div class="preview-card colour-preview" id="colourPreview" style="background:${data.backgroundColor}; color:${data.accentColor};">
         <div class="preview-header" style="background:${data.accentColor}; color: white; padding: 12px; border-radius: 8px 8px 0 0;">
           <strong>${esc(data.shopName)}</strong>
         </div>
@@ -119,7 +119,6 @@ function SetupView(container) {
   }
 
   function bindEvents() {
-    // Step navigation
     const prevBtn = document.getElementById('prevBtn');
     const nextBtn = document.getElementById('nextBtn');
     const finishBtn = document.getElementById('finishBtn');
@@ -134,13 +133,15 @@ function SetupView(container) {
       step++;
       render();
     };
-    if (finishBtn) finishBtn.onclick = () => {
+    if (finishBtn) finishBtn.onclick = async () => {
       collectData();
       if (!data.rewardDescription.trim()) {
         shake(document.getElementById('rewardDescription'));
         return;
       }
-      Store.saveConfig({ ...data, setupComplete: true });
+      finishBtn.disabled = true;
+      finishBtn.textContent = 'Saving...';
+      await Store.saveConfig({ ...data, setupComplete: true });
       Router.navigate('/dashboard');
     };
 

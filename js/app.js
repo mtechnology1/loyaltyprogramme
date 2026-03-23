@@ -2,9 +2,9 @@
  * LoyalSip — Main App Entry Point
  * Registers routes and initializes the application
  */
-document.addEventListener('DOMContentLoaded', () => {
-  // Apply saved theme
-  Store.applyTheme();
+document.addEventListener('DOMContentLoaded', async () => {
+  // Initialize store (loads config + applies theme from Supabase)
+  await Store.init();
 
   // Register routes
   Router.register('/setup', SetupView);
@@ -15,8 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
   Router.register('/qrcard', QRCardView);
 
   // Default route
-  Router.register('/', (container) => {
-    const config = Store.getConfig();
+  Router.register('/', async (container) => {
+    const config = await Store.getConfig();
     if (config.setupComplete) {
       Router.navigate('/dashboard');
     } else {

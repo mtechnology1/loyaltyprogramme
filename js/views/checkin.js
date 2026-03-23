@@ -1,12 +1,12 @@
 /**
  * Customer Check-in View — Registration + Returning customer login
  */
-function CheckinView(container, params) {
-  const config = Store.getConfig();
-  let mode = 'phone'; // 'phone' or 'email'
-  let state = 'form';  // 'form', 'register', 'waiting', 'confirmed', 'declined', 'reward'
+async function CheckinView(container, params) {
+  const config = await Store.getConfig();
+  let mode = 'phone';
+  let state = 'form';
   let customer = null;
-  let contactValue = ''; // preserve contact across renders
+  let contactValue = '';
   let pollInterval = null;
 
   function render() {
@@ -60,7 +60,7 @@ function CheckinView(container, params) {
     if (input) input.onkeydown = (e) => { if (e.key === 'Enter') handleCheckin(); };
   }
 
-  function handleCheckin() {
+  async function handleCheckin() {
     const phoneInput = document.getElementById('phoneInput');
     const emailInput = document.getElementById('emailInput');
 
@@ -68,9 +68,9 @@ function CheckinView(container, params) {
       const phone = phoneInput ? phoneInput.value.replace(/\D/g, '') : '';
       if (phone.length < 7) { shake(phoneInput); return; }
       contactValue = phoneInput.value;
-      customer = Store.findCustomer({ phone });
+      customer = await Store.findCustomer({ phone });
       if (customer) {
-        handleReturning(customer);
+        await handleReturning(customer);
       } else {
         state = 'register';
         render();
@@ -79,9 +79,9 @@ function CheckinView(container, params) {
       const email = emailInput ? emailInput.value.trim() : '';
       if (!email.includes('@') || email.length < 5) { shake(emailInput); return; }
       contactValue = email;
-      customer = Store.findCustomer({ email });
+      customer = await Store.findCustomer({ email });
       if (customer) {
-        handleReturning(customer);
+        await handleReturning(customer);
       } else {
         state = 'register';
         render();
@@ -89,19 +89,16 @@ function CheckinView(container, params) {
     }
   }
 
-  function handleReturning(c) {
+  async function handleReturning(c) {
     customer = c;
     const threshold = config.rewardThreshold;
-    // Clear any stale resolved entries for this customer
-    Store.clearResolvedForCustomer(customer.id);
-    // If card is full, go to reward screen
+    await Store.clearResolvedForCustomer(customer.id);
     if (customer.visits > 0 && customer.visits % threshold === 0) {
       state = 'reward';
       render();
       return;
     }
-    // Manual check-in creates pending request
-    Store.addPendingRequest(customer.id, 'stamp');
+    await Store.addPendingRequest(customer.id, 'stamp');
     state = 'waiting';
     render();
   }
@@ -124,15 +121,17 @@ function CheckinView(container, params) {
     `;
 
     const nameInput = document.getElementById('nameInput');
-    document.getElementById('registerBtn').onclick = () => {
+    document.getElementById('registerBtn').onclick = async () => {
       const name = nameInput.value.trim();
       if (!name) { shake(nameInput); return; }
+      const btn = document.getElementById('registerBtn');
+      btn.disabled = true;
+      btn.textContent = 'Joining...';
       const contactData = mode === 'phone'
         ? { phone: contactValue.replace(/\D/g, '') }
         : { email: contactValue.trim() };
-      customer = Store.registerCustomer({ name, ...contactData });
-      // Auto-stamp first visit (3.1.4)
-      customer = Store.addStamp(customer.id);
+      customer = await Store.registerCustomer({ name, ...contactData });
+      customer = await Store.addStamp(customer.id);
       state = 'confirmed';
       render();
     };
@@ -155,21 +154,20 @@ function CheckinView(container, params) {
       </div>
     `;
 
-    document.getElementById('cancelBtn').onclick = () => {
-      Store.cancelPending(customer.id);
+    document.getElementById('cancelBtn').onclick = async () => {
+      await Store.cancelPending(customer.id);
       state = 'form';
       render();
     };
 
-    // Poll for resolution — check resolved status to distinguish confirmed vs declined
-    pollInterval = setInterval(() => {
-      const pending = Store.findPendingForCustomer(customer.id);
+    pollInterval = setInterval(async () => {
+      const pending = await Store.findPendingForCustomer(customer.id);
       if (!pending) {
         clearInterval(pollInterval);
         pollInterval = null;
-        const resolved = Store.findResolvedForCustomer(customer.id);
-        Store.clearResolvedForCustomer(customer.id);
-        customer = Store.findCustomer({ id: customer.id });
+        const resolved = await Store.findResolvedForCustomer(customer.id);
+        await Store.clearResolvedForCustomer(customer.id);
+        customer = await Store.findCustomer({ id: customer.id });
         if (resolved && resolved.status === 'declined') {
           state = 'declined';
         } else {
@@ -177,7 +175,7 @@ function CheckinView(container, params) {
         }
         render();
       }
-    }, 1000);
+    }, 1500);
   }
 
   function renderConfirmed() {
@@ -241,9 +239,9 @@ function CheckinView(container, params) {
       </div>
     `;
 
-    document.getElementById('redeemBtn').onclick = () => {
-      Store.clearResolvedForCustomer(customer.id);
-      Store.addPendingRequest(customer.id, 'redemption');
+    document.getElementById('redeemBtn').onclick = async () => {
+      await Store.clearResolvedForCustomer(customer.id);
+      await Store.addPendingRequest(customer.id, 'redemption');
       state = 'redeem-waiting';
       render();
     };
@@ -264,20 +262,20 @@ function CheckinView(container, params) {
       </div>
     `;
 
-    document.getElementById('cancelRedeemBtn').onclick = () => {
-      Store.cancelPending(customer.id);
+    document.getElementById('cancelRedeemBtn').onclick = async () => {
+      await Store.cancelPending(customer.id);
       state = 'form';
       render();
     };
 
-    pollInterval = setInterval(() => {
-      const pending = Store.findPendingForCustomer(customer.id);
+    pollInterval = setInterval(async () => {
+      const pending = await Store.findPendingForCustomer(customer.id);
       if (!pending) {
         clearInterval(pollInterval);
         pollInterval = null;
-        const resolved = Store.findResolvedForCustomer(customer.id);
-        Store.clearResolvedForCustomer(customer.id);
-        customer = Store.findCustomer({ id: customer.id });
+        const resolved = await Store.findResolvedForCustomer(customer.id);
+        await Store.clearResolvedForCustomer(customer.id);
+        customer = await Store.findCustomer({ id: customer.id });
         if (resolved && resolved.status === 'declined') {
           state = 'redeem-declined';
         } else {
@@ -285,7 +283,7 @@ function CheckinView(container, params) {
         }
         render();
       }
-    }, 1000);
+    }, 1500);
   }
 
   function renderCelebration() {

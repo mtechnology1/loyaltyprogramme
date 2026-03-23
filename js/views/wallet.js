@@ -1,10 +1,10 @@
 /**
  * Wallet Pass View — Customer's digital loyalty card with QR code
  */
-function WalletView(container, params, routeParams) {
+async function WalletView(container, params, routeParams) {
   const passCode = routeParams ? routeParams.code : '';
-  const config = Store.getConfig();
-  const customer = Store.findCustomer({ passCode });
+  const config = await Store.getConfig();
+  const customer = await Store.findCustomer({ passCode });
 
   if (!customer) {
     container.innerHTML = `

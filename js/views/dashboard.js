@@ -1,11 +1,11 @@
 /**
  * Owner Dashboard — Overview metrics, customer list, settings
  */
-function DashboardView(container, params) {
+async function DashboardView(container, params) {
   const tab = params.get('tab') || 'overview';
-  const config = Store.getConfig();
+  const config = await Store.getConfig();
 
-  function render() {
+  async function render() {
     container.innerHTML = `
       <div class="dashboard">
         <div class="dash-header">
@@ -25,13 +25,13 @@ function DashboardView(container, params) {
     `;
 
     const content = document.getElementById('dashContent');
-    if (tab === 'overview') renderOverview(content);
-    else if (tab === 'customers') renderCustomers(content);
+    if (tab === 'overview') await renderOverview(content);
+    else if (tab === 'customers') await renderCustomers(content);
     else if (tab === 'settings') renderSettings(content);
   }
 
-  function renderOverview(el) {
-    const a = Store.getAnalytics();
+  async function renderOverview(el) {
+    const a = await Store.getAnalytics();
 
     el.innerHTML = `
       <div class="stats-grid">
@@ -78,8 +78,8 @@ function DashboardView(container, params) {
     `;
   }
 
-  function renderCustomers(el) {
-    const customers = Store.getCustomers();
+  async function renderCustomers(el) {
+    const customers = await Store.getCustomers();
     let sortField = 'lastVisit';
     let sortDir = -1;
 
@@ -141,7 +141,7 @@ function DashboardView(container, params) {
   }
 
   function renderSettings(el) {
-    const cfg = Store.getConfig();
+    const cfg = config;
     el.innerHTML = `
       <div class="settings-form">
         <div class="form-group">
@@ -195,8 +195,11 @@ function DashboardView(container, params) {
     bgInput.oninput = () => bgHex.value = bgInput.value;
     bgHex.oninput = () => { if (/^#[0-9a-fA-F]{6}$/.test(bgHex.value)) bgInput.value = bgHex.value; };
 
-    document.getElementById('saveSettingsBtn').onclick = () => {
-      Store.saveConfig({
+    document.getElementById('saveSettingsBtn').onclick = async () => {
+      const btn = document.getElementById('saveSettingsBtn');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+      await Store.saveConfig({
         shopName: document.getElementById('setName').value.trim(),
         tagline: document.getElementById('setTagline').value.trim(),
         accentColor: acInput.value,
@@ -205,11 +208,12 @@ function DashboardView(container, params) {
         rewardDescription: document.getElementById('setReward').value.trim(),
         shopUrl: document.getElementById('setUrl').value.trim(),
       });
+      btn.disabled = false;
+      btn.textContent = 'Save Settings';
       const toast = document.getElementById('settingsToast');
       toast.textContent = 'Settings saved!';
       toast.className = 'settings-toast show';
       setTimeout(() => toast.className = 'settings-toast hidden', 2000);
-      // Re-render header with new name
       const header = container.querySelector('.dash-header h1');
       if (header) header.textContent = document.getElementById('setName').value.trim();
     };
@@ -233,5 +237,5 @@ function DashboardView(container, params) {
     return d.innerHTML;
   }
 
-  render();
+  await render();
 }

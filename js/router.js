@@ -1,5 +1,5 @@
 /**
- * LoyalSip Hash Router
+ * LoyalSip Hash Router (async-aware)
  */
 const Router = (() => {
   const routes = {};
@@ -13,7 +13,7 @@ const Router = (() => {
     window.location.hash = '#' + path;
   }
 
-  function handleRoute() {
+  async function handleRoute() {
     if (currentCleanup) { currentCleanup(); currentCleanup = null; }
 
     const hash = window.location.hash.slice(1) || '/';
@@ -21,7 +21,7 @@ const Router = (() => {
     const params = new URLSearchParams(queryParts.join('?'));
 
     // Check if setup is needed
-    const config = Store.getConfig();
+    const config = await Store.getConfig();
     if (!config.setupComplete && path !== '/setup') {
       navigate('/setup');
       return;
@@ -33,7 +33,7 @@ const Router = (() => {
 
     const handler = routes[path];
     if (handler) {
-      const cleanup = handler(app, params);
+      const cleanup = await handler(app, params);
       if (typeof cleanup === 'function') currentCleanup = cleanup;
     } else {
       // Try prefix matching for parameterized routes
@@ -52,7 +52,7 @@ const Router = (() => {
               }
             }
             if (match) {
-              const cleanup = h(app, params, routeParams);
+              const cleanup = await h(app, params, routeParams);
               if (typeof cleanup === 'function') currentCleanup = cleanup;
               return;
             }

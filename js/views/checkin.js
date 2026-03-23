@@ -1,20 +1,26 @@
 /**
  * Customer Check-in View — Registration + Returning customer login
  */
-function CheckinView(container, params) {
-  const config = Store.getConfig();
-  let mode = 'phone'; // 'phone' or 'email'
-  let state = 'form';  // 'form', 'register', 'waiting', 'confirmed', 'reward'
+async function CheckinView(container, params) {
+  const config = await Store.getConfig();
+  let mode = 'phone';
+  let state = 'form';
   let customer = null;
+  let contactValue = '';
   let pollInterval = null;
 
   function render() {
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     container.className = 'checkin-page';
     if (state === 'form') renderForm();
     else if (state === 'register') renderRegister();
     else if (state === 'waiting') renderWaiting();
     else if (state === 'confirmed') renderConfirmed();
+    else if (state === 'declined') renderDeclined();
     else if (state === 'reward') renderReward();
+    else if (state === 'redeem-waiting') renderRedemptionWaiting();
+    else if (state === 'celebration') renderCelebration();
+    else if (state === 'redeem-declined') renderRedemptionDeclined();
   }
 
   function renderForm() {
@@ -48,24 +54,23 @@ function CheckinView(container, params) {
 
     document.getElementById('togglePhone').onclick = () => { mode = 'phone'; render(); };
     document.getElementById('toggleEmail').onclick = () => { mode = 'email'; render(); };
-
     document.getElementById('checkinBtn').onclick = handleCheckin;
 
-    // Enter key
     const input = document.getElementById('phoneInput') || document.getElementById('emailInput');
     if (input) input.onkeydown = (e) => { if (e.key === 'Enter') handleCheckin(); };
   }
 
-  function handleCheckin() {
+  async function handleCheckin() {
     const phoneInput = document.getElementById('phoneInput');
     const emailInput = document.getElementById('emailInput');
 
     if (mode === 'phone') {
       const phone = phoneInput ? phoneInput.value.replace(/\D/g, '') : '';
       if (phone.length < 7) { shake(phoneInput); return; }
-      customer = Store.findCustomer({ phone });
+      contactValue = phoneInput.value;
+      customer = await Store.findCustomer({ phone });
       if (customer) {
-        handleReturning(customer);
+        await handleReturning(customer);
       } else {
         state = 'register';
         render();
@@ -73,9 +78,10 @@ function CheckinView(container, params) {
     } else {
       const email = emailInput ? emailInput.value.trim() : '';
       if (!email.includes('@') || email.length < 5) { shake(emailInput); return; }
-      customer = Store.findCustomer({ email });
+      contactValue = email;
+      customer = await Store.findCustomer({ email });
       if (customer) {
-        handleReturning(customer);
+        await handleReturning(customer);
       } else {
         state = 'register';
         render();
@@ -83,28 +89,21 @@ function CheckinView(container, params) {
     }
   }
 
-  function handleReturning(c) {
+  async function handleReturning(c) {
     customer = c;
     const threshold = config.rewardThreshold;
-    // If card is full, go to reward screen
+    await Store.clearResolvedForCustomer(customer.id);
     if (customer.visits > 0 && customer.visits % threshold === 0) {
       state = 'reward';
       render();
       return;
     }
-    // Manual check-in creates pending request
-    Store.addPendingRequest(customer.id, 'stamp');
+    await Store.addPendingRequest(customer.id, 'stamp');
     state = 'waiting';
     render();
   }
 
   function renderRegister() {
-    const phoneInput = document.getElementById('phoneInput');
-    const emailInput = document.getElementById('emailInput');
-    const contact = mode === 'phone'
-      ? (phoneInput ? phoneInput.value : '')
-      : (emailInput ? emailInput.value : '');
-
     container.innerHTML = `
       <div class="checkin-container">
         <div class="checkin-header">
@@ -122,13 +121,17 @@ function CheckinView(container, params) {
     `;
 
     const nameInput = document.getElementById('nameInput');
-    document.getElementById('registerBtn').onclick = () => {
+    document.getElementById('registerBtn').onclick = async () => {
       const name = nameInput.value.trim();
       if (!name) { shake(nameInput); return; }
-      const contactData = mode === 'phone' ? { phone: contact.replace(/\D/g, '') } : { email: contact.trim() };
-      customer = Store.registerCustomer({ name, ...contactData });
-      // Auto-stamp first visit
-      customer = Store.addStamp(customer.id);
+      const btn = document.getElementById('registerBtn');
+      btn.disabled = true;
+      btn.textContent = 'Joining...';
+      const contactData = mode === 'phone'
+        ? { phone: contactValue.replace(/\D/g, '') }
+        : { email: contactValue.trim() };
+      customer = await Store.registerCustomer({ name, ...contactData });
+      customer = await Store.addStamp(customer.id);
       state = 'confirmed';
       render();
     };
@@ -145,28 +148,34 @@ function CheckinView(container, params) {
           <div class="spinner"></div>
           <h2>Waiting for barista...</h2>
           <p>Hi ${esc(customer.name)}, your check-in request has been sent</p>
+          <p class="waiting-progress">${customer.visits} / ${config.rewardThreshold} stamps so far</p>
           <button class="btn btn-outline" id="cancelBtn">Cancel</button>
         </div>
       </div>
     `;
 
-    document.getElementById('cancelBtn').onclick = () => {
-      Store.cancelPending(customer.id);
+    document.getElementById('cancelBtn').onclick = async () => {
+      await Store.cancelPending(customer.id);
       state = 'form';
       render();
     };
 
-    // Poll for confirmation
-    pollInterval = setInterval(() => {
-      const pending = Store.findPendingForCustomer(customer.id);
+    pollInterval = setInterval(async () => {
+      const pending = await Store.findPendingForCustomer(customer.id);
       if (!pending) {
-        // Request was resolved — refresh customer data
         clearInterval(pollInterval);
-        customer = Store.findCustomer({ id: customer.id });
-        state = 'confirmed';
+        pollInterval = null;
+        const resolved = await Store.findResolvedForCustomer(customer.id);
+        await Store.clearResolvedForCustomer(customer.id);
+        customer = await Store.findCustomer({ id: customer.id });
+        if (resolved && resolved.status === 'declined') {
+          state = 'declined';
+        } else {
+          state = 'confirmed';
+        }
         render();
       }
-    }, 1000);
+    }, 1500);
   }
 
   function renderConfirmed() {
@@ -185,26 +194,33 @@ function CheckinView(container, params) {
           <h2>Stamp collected!</h2>
           <p>Visit #${customer.visits} — ${remaining > 0 ? remaining + ' more until your reward!' : 'You\'ve earned your reward!'}</p>
           ${renderStampCard(displayStamps, threshold)}
-          ${customer.visits === 1 ? `
-            <div class="wallet-prompt">
-              <button class="btn btn-primary btn-block" id="walletBtn">Save Wallet Pass</button>
-              <a href="#/checkin" class="skip-link" id="skipWallet">Skip for now</a>
-            </div>
-          ` : `
-            <button class="btn btn-primary btn-block" id="doneBtn">Done</button>
-          `}
+          <div class="confirmed-actions">
+            <a href="#/wallet/${customer.passCode}" class="btn btn-primary btn-block">View Wallet Pass</a>
+            <button class="btn btn-outline btn-block" id="doneBtn">Done</button>
+          </div>
         </div>
       </div>
     `;
 
-    const walletBtn = document.getElementById('walletBtn');
-    if (walletBtn) walletBtn.onclick = () => Router.navigate('/wallet/' + customer.passCode);
+    document.getElementById('doneBtn').onclick = () => { state = 'form'; render(); };
+  }
 
-    const doneBtn = document.getElementById('doneBtn');
-    if (doneBtn) doneBtn.onclick = () => { state = 'form'; render(); };
+  function renderDeclined() {
+    container.innerHTML = `
+      <div class="checkin-container">
+        <div class="checkin-header">
+          <h1>${esc(config.shopName)}</h1>
+        </div>
+        <div class="checkin-card declined-card">
+          <div class="declined-icon">&#10007;</div>
+          <h2>Request declined</h2>
+          <p>The barista was unable to confirm your check-in. Please speak to a member of staff or try again.</p>
+          <button class="btn btn-primary btn-block" id="retryBtn">Try Again</button>
+        </div>
+      </div>
+    `;
 
-    const skipLink = document.getElementById('skipWallet');
-    if (skipLink) skipLink.onclick = (e) => { e.preventDefault(); state = 'form'; render(); };
+    document.getElementById('retryBtn').onclick = () => { state = 'form'; render(); };
   }
 
   function renderReward() {
@@ -223,9 +239,11 @@ function CheckinView(container, params) {
       </div>
     `;
 
-    document.getElementById('redeemBtn').onclick = () => {
-      Store.addPendingRequest(customer.id, 'redemption');
-      renderRedemptionWaiting();
+    document.getElementById('redeemBtn').onclick = async () => {
+      await Store.clearResolvedForCustomer(customer.id);
+      await Store.addPendingRequest(customer.id, 'redemption');
+      state = 'redeem-waiting';
+      render();
     };
   }
 
@@ -244,20 +262,28 @@ function CheckinView(container, params) {
       </div>
     `;
 
-    document.getElementById('cancelRedeemBtn').onclick = () => {
-      Store.cancelPending(customer.id);
+    document.getElementById('cancelRedeemBtn').onclick = async () => {
+      await Store.cancelPending(customer.id);
       state = 'form';
       render();
     };
 
-    pollInterval = setInterval(() => {
-      const pending = Store.findPendingForCustomer(customer.id);
+    pollInterval = setInterval(async () => {
+      const pending = await Store.findPendingForCustomer(customer.id);
       if (!pending) {
         clearInterval(pollInterval);
-        customer = Store.findCustomer({ id: customer.id });
-        renderCelebration();
+        pollInterval = null;
+        const resolved = await Store.findResolvedForCustomer(customer.id);
+        await Store.clearResolvedForCustomer(customer.id);
+        customer = await Store.findCustomer({ id: customer.id });
+        if (resolved && resolved.status === 'declined') {
+          state = 'redeem-declined';
+        } else {
+          state = 'celebration';
+        }
+        render();
       }
-    }, 1000);
+    }, 1500);
   }
 
   function renderCelebration() {
@@ -278,6 +304,24 @@ function CheckinView(container, params) {
     `;
 
     document.getElementById('celebrationDone').onclick = () => { state = 'form'; render(); };
+  }
+
+  function renderRedemptionDeclined() {
+    container.innerHTML = `
+      <div class="checkin-container">
+        <div class="checkin-header">
+          <h1>${esc(config.shopName)}</h1>
+        </div>
+        <div class="checkin-card declined-card">
+          <div class="declined-icon">&#10007;</div>
+          <h2>Redemption declined</h2>
+          <p>The barista was unable to confirm your reward. Please speak to a member of staff.</p>
+          <button class="btn btn-primary btn-block" id="retryRedeemBtn">Back</button>
+        </div>
+      </div>
+    `;
+
+    document.getElementById('retryRedeemBtn').onclick = () => { state = 'form'; render(); };
   }
 
   function renderStampCard(filled, total) {

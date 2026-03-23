@@ -1,8 +1,8 @@
 /**
  * QR Code Card — Printable branded counter card
  */
-function QRCardView(container) {
-  const config = Store.getConfig();
+async function QRCardView(container) {
+  const config = await Store.getConfig();
 
   container.innerHTML = `
     <div class="qrcard-container">
@@ -43,7 +43,6 @@ function QRCardView(container) {
 
   // Print
   document.getElementById('printCardBtn').onclick = () => {
-    const card = document.getElementById('printableCard');
     const win = window.open('', '_blank');
     win.document.write(`
       <!DOCTYPE html>

@@ -1,13 +1,11 @@
 /**
- * LoyalSip Data Store — localStorage persistence layer
+ * LoyalSip Data Store — Supabase persistence layer
+ * All read/write methods are async (return Promises).
  */
 const Store = (() => {
-  const KEYS = {
-    config: 'loyalsip_config',
-    customers: 'loyalsip_customers',
-    pending: 'loyalsip_pending',
-    recentStamps: 'loyalsip_recent_stamps',
-  };
+  const SUPABASE_URL = 'https://bakxitkeaxgnddstynom.supabase.co';
+  const SUPABASE_KEY = 'sb_publishable_cYFm4S1-FafXBSBbjrQL3g_wGuInwtO';
+  const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
   const defaultConfig = {
     shopName: '',
@@ -20,153 +18,347 @@ const Store = (() => {
     setupComplete: false,
   };
 
-  function _get(key, fallback) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
-    } catch { return fallback; }
+  let _configId = null;
+
+  // ── DB ↔ JS mapping helpers ──
+
+  function configFromDB(row) {
+    return {
+      shopName: row.shop_name,
+      tagline: row.tagline,
+      accentColor: row.accent_color,
+      backgroundColor: row.background_color,
+      rewardThreshold: row.reward_threshold,
+      rewardDescription: row.reward_description,
+      shopUrl: row.shop_url,
+      setupComplete: row.setup_complete,
+    };
   }
 
-  function _set(key, value) {
-    localStorage.setItem(key, JSON.stringify(value));
+  function configToDB(cfg) {
+    return {
+      shop_name: cfg.shopName,
+      tagline: cfg.tagline,
+      accent_color: cfg.accentColor,
+      background_color: cfg.backgroundColor,
+      reward_threshold: cfg.rewardThreshold,
+      reward_description: cfg.rewardDescription,
+      shop_url: cfg.shopUrl,
+      setup_complete: cfg.setupComplete,
+    };
   }
 
-  // Config
-  function getConfig() { return { ...defaultConfig, ..._get(KEYS.config, {}) }; }
-  function saveConfig(partial) { _set(KEYS.config, { ...getConfig(), ...partial }); applyTheme(); }
-
-  // Customers
-  function getCustomers() { return _get(KEYS.customers, []); }
-  function saveCustomers(list) { _set(KEYS.customers, list); }
-
-  function findCustomer(query) {
-    const customers = getCustomers();
-    if (query.passCode) return customers.find(c => c.passCode === query.passCode);
-    if (query.phone) return customers.find(c => c.phone === query.phone);
-    if (query.email) return customers.find(c => c.email && c.email.toLowerCase() === query.email.toLowerCase());
-    if (query.id) return customers.find(c => c.id === query.id);
-    return null;
+  function customerFromDB(row) {
+    return {
+      id: row.id,
+      name: row.name,
+      phone: row.phone || '',
+      email: row.email || '',
+      passCode: row.pass_code,
+      visits: row.visits,
+      redeemed: row.redeemed,
+      joinDate: row.join_date,
+      lastVisit: row.last_visit,
+      history: row.history || [],
+    };
   }
 
-  function generatePassCode() {
+  function customerToDB(c) {
+    return {
+      id: c.id,
+      name: c.name,
+      phone: c.phone,
+      email: c.email,
+      pass_code: c.passCode,
+      visits: c.visits,
+      redeemed: c.redeemed,
+      join_date: c.joinDate,
+      last_visit: c.lastVisit,
+      history: c.history,
+    };
+  }
+
+  function pendingFromDB(row) {
+    return {
+      id: row.id,
+      customerId: row.customer_id,
+      type: row.type,
+      status: row.status,
+      createdAt: row.created_at,
+    };
+  }
+
+  function resolvedFromDB(row) {
+    return {
+      id: row.id,
+      customerId: row.customer_id,
+      type: row.type,
+      status: row.status,
+      createdAt: row.created_at,
+      resolvedAt: row.resolved_at,
+    };
+  }
+
+  function stampFromDB(row) {
+    return {
+      name: row.name,
+      visits: row.visits,
+      isRedemption: row.is_redemption,
+      time: row.time,
+    };
+  }
+
+  // ── Init ──
+
+  async function init() {
+    const config = await getConfig();
+    applyTheme(config);
+  }
+
+  // ── Config ──
+
+  async function getConfig() {
+    const { data } = await _sb.from('config').select('*').limit(1).maybeSingle();
+    if (data) {
+      _configId = data.id;
+      return { ...defaultConfig, ...configFromDB(data) };
+    }
+    return { ...defaultConfig };
+  }
+
+  async function saveConfig(partial) {
+    const current = await getConfig();
+    const merged = { ...current, ...partial };
+    const dbData = configToDB(merged);
+
+    if (_configId) {
+      await _sb.from('config').update(dbData).eq('id', _configId);
+    } else {
+      const { data } = await _sb.from('config').insert(dbData).select().single();
+      if (data) _configId = data.id;
+    }
+    applyTheme(merged);
+  }
+
+  // ── Customers ──
+
+  async function getCustomers() {
+    const { data } = await _sb.from('customers').select('*');
+    return (data || []).map(customerFromDB);
+  }
+
+  async function saveCustomers(list) {
+    await _sb.from('customers').upsert(list.map(customerToDB));
+  }
+
+  async function findCustomer(query) {
+    let q = _sb.from('customers').select('*');
+    if (query.passCode) q = q.eq('pass_code', query.passCode);
+    else if (query.phone) q = q.eq('phone', query.phone);
+    else if (query.email) q = q.ilike('email', query.email);
+    else if (query.id) q = q.eq('id', query.id);
+    else return null;
+
+    const { data } = await q.maybeSingle();
+    return data ? customerFromDB(data) : null;
+  }
+
+  async function generatePassCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    const customers = getCustomers();
-    let code;
-    do {
+    let code, exists = true;
+    while (exists) {
       code = '';
       for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
-    } while (customers.some(c => c.passCode === code));
+      const { data } = await _sb.from('customers').select('id').eq('pass_code', code).maybeSingle();
+      exists = !!data;
+    }
     return code;
   }
 
-  function registerCustomer({ name, phone, email }) {
-    const customers = getCustomers();
-    // Check existing
-    let existing = phone ? customers.find(c => c.phone === phone) : null;
-    if (!existing && email) existing = customers.find(c => c.email && c.email.toLowerCase() === email.toLowerCase());
-    if (existing) return existing;
+  async function registerCustomer({ name, phone, email }) {
+    if (phone) {
+      const existing = await findCustomer({ phone });
+      if (existing) return existing;
+    }
+    if (email) {
+      const existing = await findCustomer({ email });
+      if (existing) return existing;
+    }
 
     const customer = {
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       name,
       phone: phone || '',
       email: email || '',
-      passCode: generatePassCode(),
+      passCode: await generatePassCode(),
       visits: 0,
       redeemed: 0,
       joinDate: Date.now(),
       lastVisit: null,
       history: [],
     };
-    customers.push(customer);
-    saveCustomers(customers);
+
+    await _sb.from('customers').insert(customerToDB(customer));
     return customer;
   }
 
-  function addStamp(customerId) {
-    const customers = getCustomers();
-    const idx = customers.findIndex(c => c.id === customerId);
-    if (idx === -1) return null;
-    customers[idx].visits += 1;
-    customers[idx].lastVisit = Date.now();
-    customers[idx].history.push({ type: 'stamp', date: Date.now() });
-    saveCustomers(customers);
-    addRecentStamp(customers[idx]);
-    return customers[idx];
+  async function addStamp(customerId) {
+    const customer = await findCustomer({ id: customerId });
+    if (!customer) return null;
+
+    customer.visits += 1;
+    customer.lastVisit = Date.now();
+    customer.history.push({ type: 'stamp', date: Date.now() });
+
+    await _sb.from('customers').update({
+      visits: customer.visits,
+      last_visit: customer.lastVisit,
+      history: customer.history,
+    }).eq('id', customerId);
+
+    await addRecentStamp(customer);
+    return customer;
   }
 
-  function redeemReward(customerId) {
-    const customers = getCustomers();
-    const idx = customers.findIndex(c => c.id === customerId);
-    if (idx === -1) return null;
-    customers[idx].redeemed += 1;
-    customers[idx].visits = 0;
-    customers[idx].lastVisit = Date.now();
-    customers[idx].history.push({ type: 'redemption', date: Date.now() });
-    saveCustomers(customers);
-    addRecentStamp(customers[idx], true);
-    return customers[idx];
+  async function redeemReward(customerId) {
+    const customer = await findCustomer({ id: customerId });
+    if (!customer) return null;
+
+    customer.redeemed += 1;
+    customer.visits = 0;
+    customer.lastVisit = Date.now();
+    customer.history.push({ type: 'redemption', date: Date.now() });
+
+    await _sb.from('customers').update({
+      visits: customer.visits,
+      redeemed: customer.redeemed,
+      last_visit: customer.lastVisit,
+      history: customer.history,
+    }).eq('id', customerId);
+
+    await addRecentStamp(customer, true);
+    return customer;
   }
 
-  // Pending requests
-  function getPending() { return _get(KEYS.pending, []); }
-  function savePending(list) { _set(KEYS.pending, list); }
+  // ── Pending requests ──
 
-  function addPendingRequest(customerId, type = 'stamp') {
-    const pending = getPending();
-    // Remove any existing pending for same customer+type
-    const filtered = pending.filter(p => !(p.customerId === customerId && p.type === type));
-    filtered.push({
+  async function getPending() {
+    const { data } = await _sb.from('pending_requests').select('*');
+    return (data || []).map(pendingFromDB);
+  }
+
+  async function addPendingRequest(customerId, type = 'stamp') {
+    await _sb.from('pending_requests')
+      .delete()
+      .eq('customer_id', customerId)
+      .eq('type', type);
+
+    await _sb.from('pending_requests').insert({
       id: Date.now().toString(36) + Math.random().toString(36).slice(2, 4),
-      customerId,
+      customer_id: customerId,
       type,
       status: 'pending',
-      createdAt: Date.now(),
+      created_at: Date.now(),
     });
-    savePending(filtered);
   }
 
-  function resolvePending(requestId, status) {
-    const pending = getPending();
-    const idx = pending.findIndex(p => p.id === requestId);
-    if (idx === -1) return null;
-    const req = pending[idx];
-    pending.splice(idx, 1);
-    savePending(pending);
-    return { ...req, status };
+  async function resolvePending(requestId, status) {
+    const { data: reqData } = await _sb.from('pending_requests')
+      .select('*')
+      .eq('id', requestId)
+      .maybeSingle();
+
+    if (!reqData) return null;
+
+    await _sb.from('pending_requests').delete().eq('id', requestId);
+
+    const resolved = {
+      id: reqData.id,
+      customer_id: reqData.customer_id,
+      type: reqData.type,
+      status,
+      created_at: reqData.created_at,
+      resolved_at: Date.now(),
+    };
+    await _sb.from('resolved_requests').insert(resolved);
+
+    // Keep only last 50 resolved entries
+    const { data: all } = await _sb.from('resolved_requests')
+      .select('id')
+      .order('resolved_at', { ascending: true });
+    if (all && all.length > 50) {
+      const toDelete = all.slice(0, all.length - 50).map(r => r.id);
+      await _sb.from('resolved_requests').delete().in('id', toDelete);
+    }
+
+    return resolvedFromDB(resolved);
   }
 
-  function cancelPending(customerId) {
-    const pending = getPending();
-    savePending(pending.filter(p => p.customerId !== customerId));
+  async function cancelPending(customerId) {
+    await _sb.from('pending_requests').delete().eq('customer_id', customerId);
   }
 
-  function findPendingForCustomer(customerId) {
-    return getPending().find(p => p.customerId === customerId && p.status === 'pending');
+  async function findPendingForCustomer(customerId) {
+    const { data } = await _sb.from('pending_requests')
+      .select('*')
+      .eq('customer_id', customerId)
+      .eq('status', 'pending')
+      .maybeSingle();
+    return data ? pendingFromDB(data) : null;
   }
 
-  // Recent stamps (for barista display)
-  function getRecentStamps() { return _get(KEYS.recentStamps, []); }
-  function addRecentStamp(customer, isRedemption = false) {
-    const recent = getRecentStamps();
-    recent.unshift({
+  async function findResolvedForCustomer(customerId) {
+    const { data } = await _sb.from('resolved_requests')
+      .select('*')
+      .eq('customer_id', customerId)
+      .order('resolved_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return data ? resolvedFromDB(data) : null;
+  }
+
+  async function clearResolvedForCustomer(customerId) {
+    await _sb.from('resolved_requests').delete().eq('customer_id', customerId);
+  }
+
+  // ── Recent stamps ──
+
+  async function getRecentStamps() {
+    const { data } = await _sb.from('recent_stamps')
+      .select('*')
+      .order('time', { ascending: false })
+      .limit(20);
+    return (data || []).map(stampFromDB);
+  }
+
+  async function addRecentStamp(customer, isRedemption = false) {
+    await _sb.from('recent_stamps').insert({
       name: customer.name,
       visits: customer.visits,
-      isRedemption,
+      is_redemption: isRedemption,
       time: Date.now(),
     });
-    _set(KEYS.recentStamps, recent.slice(0, 20));
+    // Keep only last 20
+    const { data: all } = await _sb.from('recent_stamps')
+      .select('id')
+      .order('time', { ascending: false });
+    if (all && all.length > 20) {
+      const toDelete = all.slice(20).map(r => r.id);
+      await _sb.from('recent_stamps').delete().in('id', toDelete);
+    }
   }
 
-  // Analytics helpers
-  function getAnalytics() {
-    const customers = getCustomers();
+  // ── Analytics ──
+
+  async function getAnalytics() {
+    const customers = await getCustomers();
+    const config = await getConfig();
     const now = Date.now();
     const day14 = 14 * 24 * 60 * 60 * 1000;
     const day30 = 30 * 24 * 60 * 60 * 1000;
 
     const totalMembers = customers.length;
-    const totalVisits = customers.reduce((s, c) => s + c.visits + (c.redeemed * getConfig().rewardThreshold), 0);
+    const totalVisits = customers.reduce((s, c) => s + c.visits + (c.redeemed * config.rewardThreshold), 0);
     const totalRedeemed = customers.reduce((s, c) => s + c.redeemed, 0);
     const active = customers.filter(c => c.lastVisit && (now - c.lastVisit) < day14).length;
     const atRisk = customers
@@ -174,8 +366,8 @@ const Store = (() => {
       .sort((a, b) => a.lastVisit - b.lastVisit);
     const topRegulars = [...customers]
       .sort((a, b) => {
-        const aTotal = a.visits + a.redeemed * getConfig().rewardThreshold;
-        const bTotal = b.visits + b.redeemed * getConfig().rewardThreshold;
+        const aTotal = a.visits + a.redeemed * config.rewardThreshold;
+        const bTotal = b.visits + b.redeemed * config.rewardThreshold;
         return bTotal - aTotal;
       })
       .slice(0, 10);
@@ -183,16 +375,15 @@ const Store = (() => {
     return { totalMembers, totalVisits, totalRedeemed, active, atRisk, topRegulars };
   }
 
-  // Theme application
-  function applyTheme() {
-    const cfg = getConfig();
+  // ── Theme ──
+
+  function applyTheme(cfg) {
+    if (!cfg) cfg = defaultConfig;
     document.documentElement.style.setProperty('--accent', cfg.accentColor);
     document.documentElement.style.setProperty('--bg', cfg.backgroundColor);
-    // Derive text color based on background luminance
     const lum = getLuminance(cfg.backgroundColor);
     document.documentElement.style.setProperty('--text', lum > 0.5 ? '#1a1a1a' : '#f5f5f5');
     document.documentElement.style.setProperty('--text-muted', lum > 0.5 ? '#666' : '#bbb');
-    // Derive accent text
     const accentLum = getLuminance(cfg.accentColor);
     document.documentElement.style.setProperty('--accent-text', accentLum > 0.5 ? '#1a1a1a' : '#ffffff');
   }
@@ -207,10 +398,11 @@ const Store = (() => {
   }
 
   return {
+    init,
     getConfig, saveConfig, defaultConfig,
     getCustomers, saveCustomers, findCustomer, registerCustomer, generatePassCode,
     addStamp, redeemReward,
-    getPending, addPendingRequest, resolvePending, cancelPending, findPendingForCustomer,
+    getPending, addPendingRequest, resolvePending, cancelPending, findPendingForCustomer, findResolvedForCustomer, clearResolvedForCustomer,
     getRecentStamps,
     getAnalytics,
     applyTheme,
